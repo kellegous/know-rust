@@ -1,13 +1,12 @@
-extern crate hyper;
-
-use hyper::{Body, Request, Response, Server, StatusCode, header};
-use hyper::rt::Future;
-use hyper::service::service_fn_ok;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{header, Body, Request, Response, Server, StatusCode};
+use std::convert::Infallible;
 use std::env;
 use std::sync::Arc;
 
 fn serve_hello(name: &str) -> Response<Body> {
-    let body = format!(r###"
+    let body = format!(
+        r###"
         <!DOCTYPE html>
         <html>
         <head>
@@ -20,7 +19,9 @@ fn serve_hello(name: &str) -> Response<Body> {
             <div>Hello, {}</div>
         </body>
         </html>
-    "###, name);
+    "###,
+        name
+    );
     Response::builder()
         .header(header::CONTENT_TYPE, "text/html;charset=utf-8")
         .body(Body::from(body))
@@ -49,7 +50,7 @@ fn serve_css() -> Response<Body> {
         .unwrap()
 }
 
-fn serve_content(req: &Request<Body>, name: &str) -> Response<Body> {
+fn serve_content(req: Request<Body>, name: &str) -> Response<Body> {
     match req.uri().path() {
         "/" => serve_hello(name),
         "/css" => serve_css(),
@@ -60,22 +61,28 @@ fn serve_content(req: &Request<Body>, name: &str) -> Response<Body> {
     }
 }
 
-fn main() {
-    let name = match env::args().nth(1) {
-        Some(x) => x,
-        None => String::from("world"),
-    };
+#[tokio::main]
+pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pretty_env_logger::init();
 
-    let name = Arc::new(name);
+    let name = Arc::new(env::args().nth(1).unwrap_or("world".into()));
+
+    let service = make_service_fn(move |_| {
+        let name = name.clone();
+        async move {
+            Ok::<_, Infallible>(service_fn(move |req| {
+                let name = name.clone();
+                async move { Ok::<_, Infallible>(serve_content(req, &name)) }
+            }))
+        }
+    });
 
     let addr = ([127, 0, 0, 1], 3000).into();
-    let server = Server::bind(&addr)
-        .serve(move || {
-            let name = name.clone();
-            service_fn_ok(move |req: Request<Body>| serve_content(&req, &name))
-        })
-        .map_err(|e| eprintln!("server err: {}", e));
+    let server = Server::bind(&addr).serve(service);
 
-    println!("Visit http://{}/", addr);
-    hyper::rt::run(server);
+    println!("Listening on http://{}", addr);
+
+    server.await?;
+
+    Ok(())
 }
